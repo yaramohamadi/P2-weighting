@@ -1,6 +1,9 @@
 import copy
 import functools
 import os
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+import numpy as np
 
 import blobfile as bf
 import torch as th
@@ -38,7 +41,23 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        # For sampling
+        save_samples_dir="",
+        checkpoint_dir="",
+        sample = False,
+        use_ddim=False, # If sampling mid-training
+        how_many_samples=50, # For sampling mid training
+        image_size=64,
     ):
+        
+        # For sampling
+        self.save_samples_dir = save_samples_dir
+        self.checkpoint_dir = checkpoint_dir
+        self.sample = sample
+        self.use_ddim = use_ddim
+        self.how_many_samples=how_many_samples
+        self.image_size=image_size
+
         self.model = model
         self.diffusion = diffusion
         self.data = data
@@ -151,23 +170,37 @@ class TrainLoop:
             self.opt.load_state_dict(state_dict)
 
     def run_loop(self):
-        while (
-            not self.lr_anneal_steps
-            or self.step + self.resume_step < self.lr_anneal_steps
-        ):
+
+        def loop():
+            while (
+                not self.lr_anneal_steps
+                or self.step + self.resume_step < self.lr_anneal_steps
+            ):
+                yield # This terminology is for working with tqdm and infinite while loops 
+
+        for _ in tqdm(loop()):
+
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
             if self.step % self.save_interval == 0:
                 self.save()
+                if self.sample: # Added this for sampling
+                    self.model.eval()
+                    self.samplefunc() # Possible metric evaluations happening here also
+                    self.model.train()
+
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
             self.step += 1
+            if self.step == 501:
+                break
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save()
+        
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
@@ -238,21 +271,57 @@ class TrainLoop:
                     filename = f"model{(self.step+self.resume_step):06d}.pt"
                 else:
                     filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                with bf.BlobFile(bf.join(self.checkpoint_dir, filename), "wb") as f:
                     th.save(state_dict, f)
 
         save_checkpoint(0, self.mp_trainer.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        if dist.get_rank() == 0:
-            with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
+        # if dist.get_rank() == 0:
+        #     with bf.BlobFile(
+        #        bf.join(self.checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
+        #        "wb",
+        #    ) as f:
+        #        th.save(self.opt.state_dict(), bf.join(self.checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"))
 
         dist.barrier()
+
+        
+    # sample batches everytime you save checkpoints 
+    def samplefunc(self):
+
+        # Create folder
+        im_path = os.path.join(self.save_samples_dir, str(self.step+self.resume_step))
+        os.makedirs(im_path, exist_ok=True)
+
+        print(f"sampling {self.how_many_samples} images")
+        sample_fn = (self.diffusion.p_sample_loop if not self.use_ddim else self.diffusion.ddim_sample_loop)
+
+        all_images = []
+        for ind, _ in tqdm(enumerate(range(0, self.how_many_samples + self.batch_size - 1, self.batch_size))):
+            sample = sample_fn(
+                self.model,
+                (self.batch_size, 3, self.image_size , self.image_size),
+                clip_denoised=True,
+                model_kwargs={}, # This is not needed, just class conditional stuff
+                progress=False
+            )
+            sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+            sample = sample.permute(0, 2, 3, 1)
+            sample = sample.contiguous().cpu().numpy()
+
+            if ind <5: # Save 5 batches as images to see the visualizations
+                for sidx, s in enumerate(sample):
+                    plt.imsave(os.path.join(im_path, f'{sidx + ind*self.batch_size}.png'), s)
+            all_images.extend(sample)
+
+        all_images = all_images[: self.how_many_samples]
+        
+        sample_path = os.path.join(self.save_samples_dir, f"samples_{self.step+self.resume_step}.npz")
+        np.savez(sample_path, all_images)
+        print("sampling complete")
+    
 
 
 def parse_resume_step_from_filename(filename):
@@ -268,12 +337,6 @@ def parse_resume_step_from_filename(filename):
         return int(split1)
     except ValueError:
         return 0
-
-
-def get_blob_logdir():
-    # You can change this to be a separate path to save checkpoints to
-    # a blobstore or some external drive.
-    return logger.get_dir()
 
 
 def find_resume_checkpoint():
@@ -299,3 +362,4 @@ def log_loss_dict(diffusion, ts, losses):
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
+

@@ -2,6 +2,9 @@
 Train a diffusion model on images.
 """
 
+import os 
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
+
 import argparse
 
 from guided_diffusion import dist_util, logger
@@ -15,6 +18,7 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.train_util import TrainLoop
 
+import torch as th
 
 def main():
     args = create_argparser().parse_args()
@@ -26,8 +30,13 @@ def main():
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
+
+    logger.log("Loading pretrained model...")
+    checkpoint = th.load(args.model_path)
+    model.load_state_dict(checkpoint, strict = True)
+
     model.to(dist_util.dev())
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
+    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion) 
 
     logger.log("creating data loader...")
     data = load_data(
@@ -54,6 +63,13 @@ def main():
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
+        # Samples
+        save_samples_dir=args.save_samples_dir,
+        checkpoint_dir=args.checkpoint_dir,
+        sample = args.sampling,
+        use_ddim=args.use_ddim, # If sampling mid-training
+        how_many_samples=args.how_many_samples, # For sampling mid training
+        image_size=args.image_size,
     ).run_loop()
 
 
@@ -68,11 +84,18 @@ def create_argparser():
         batch_size=1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=10,
-        save_interval=10000,
+        log_interval=25,
+        save_interval=25,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
+        # Added
+        use_ddim=False, # If sampling mid-training
+        how_many_samples=50, # For sampling mid training
+        checkpoint_dir='',
+        save_samples_dir='',
+        model_path='',
+        sampling=True,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
