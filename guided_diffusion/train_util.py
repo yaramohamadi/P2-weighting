@@ -184,7 +184,7 @@ class TrainLoop:
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-            if self.step % self.save_interval == 0:
+            if self.step in [0, 100, 200, 300, 350, 400, 425, 450, 475, 500]:
                 self.save()
                 if self.sample: # Added this for sampling
                     self.model.eval()
@@ -318,8 +318,11 @@ class TrainLoop:
 
         all_images = all_images[: self.how_many_samples]
         
-        sample_path = os.path.join(self.save_samples_dir, f"samples_{self.step+self.resume_step}.npz")
-        np.savez(sample_path, all_images)
+        chunk_size = self.how_many_samples // 5
+        for chunk in range(5):
+            sample_path = os.path.join(self.save_samples_dir, f"samples_{self.step+self.resume_step}_{chunk}.npz")
+            print()
+            np.savez(sample_path, all_images[chunk*chunk_size:(chunk+1)*chunk_size])
         print("sampling complete")
     
 

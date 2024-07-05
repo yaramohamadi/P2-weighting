@@ -2,9 +2,6 @@
 Train a diffusion model on images.
 """
 
-import os 
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-
 import argparse
 
 from guided_diffusion import dist_util, logger

@@ -10,13 +10,13 @@ DDIM='--timestep_respacing ddim50 --use_ddim True'
 # python /export/livia/home/vision/Ymohammadi/Code/P2-weighting/scripts/image_sample.py $FFHQ_FLGAS $DDIM $MODEL_PATH $SAMPLE_DIR 
 
 # TRAIN
-LOG_DIR='--log_dir /export/livia/home/vision/Ymohammadi/Code/results/logs'
-DATA_DIR='--data_dir /export/livia/home/vision/Ymohammadi/Dataset/sketch10/'
-CHKPT_DIR='--checkpoint_dir /export/livia/home/vision/Ymohammadi/Code/results/checkpoints/'
-SAVE_SAMPLES_DIR='--save_samples_dir /export/livia/home/vision/Ymohammadi/Code/results/samples/'
+LOG_DIR='--log_dir /export/livia/home/vision/Ymohammadi/Code/results_cat10/logs'
+DATA_DIR='--data_dir /export/livia/home/vision/Ymohammadi/Dataset/cat10/'
+CHKPT_DIR='--checkpoint_dir /export/livia/home/vision/Ymohammadi/Code/results_cat10/checkpoints/'
+SAVE_SAMPLES_DIR='--save_samples_dir /export/livia/home/vision/Ymohammadi/Code/results_cat10/samples/'
 MODEL_PATH='--model_path /export/livia/home/vision/Ymohammadi/Code/ffhq_baseline.pt'
-TRAIN_FLAGS='--sampling True --how_many_samples 1193'
-python /export/livia/home/vision/Ymohammadi/Code/P2-weighting/scripts/image_train.py $FFHQ_FLGAS $FFHQ_TRAIN_FLAGS $DDIM $TRAIN_FLAGS $MODEL_PATH $LOG_DIR $DATA_DIR $CHKPT_DIR $SAVE_SAMPLES_DIR 
+TRAIN_FLAGS='--sampling True --how_many_samples 5154'
+CUDA_VISIBLE_DEVICES="2" python /export/livia/home/vision/Ymohammadi/Code/P2-weighting/scripts/image_train.py $FFHQ_FLGAS $FFHQ_TRAIN_FLAGS $DDIM $TRAIN_FLAGS $MODEL_PATH $LOG_DIR $DATA_DIR $CHKPT_DIR $SAVE_SAMPLES_DIR 
 
 # For classifier-free guidanace
 # pretrained_model=args.pretrained_model,
