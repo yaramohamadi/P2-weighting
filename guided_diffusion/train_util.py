@@ -48,6 +48,11 @@ class TrainLoop:
         use_ddim=False, # If sampling mid-training
         how_many_samples=50, # For sampling mid training
         image_size=64,
+        # For guidance
+        clf_guidance=False,
+        pretrained_model=None,
+        guidance_scale=None,
+        pretrained_data=None,
     ):
         
         # For sampling
@@ -57,6 +62,12 @@ class TrainLoop:
         self.use_ddim = use_ddim
         self.how_many_samples=how_many_samples
         self.image_size=image_size
+
+        # For guidance
+        self.clf_guidance=clf_guidance
+        self.pretrained_model=pretrained_model
+        self.guidance_scale=guidance_scale
+        self.pretrained_data=pretrained_data
 
         self.model = model
         self.diffusion = diffusion
@@ -181,11 +192,16 @@ class TrainLoop:
         for _ in tqdm(loop()):
 
             batch, cond = next(self.data)
-            self.run_step(batch, cond)
+            # classifier-free guidance
+            if self.clf_guidance:
+                pretrained_batch, _ = next(self.pretrained_data)
+                self.run_step(batch, cond, pretrained_batch) # classifier-free guidance
+            else:
+                self.run_step(batch, cond) # classifier-free guidance
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
             if self.step in [0, 100, 200, 300, 350, 400, 425, 450, 475, 500]:
-                self.save()
+                # self.save()
                 if self.sample: # Added this for sampling
                     self.model.eval()
                     self.samplefunc() # Possible metric evaluations happening here also
@@ -202,16 +218,18 @@ class TrainLoop:
             self.save()
         
 
-    def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
+    def run_step(self, batch, cond, pretrained_batch=None): # classifier-free guidance
+        self.forward_backward(batch, cond, pretrained_batch) # classifier-free guidance
         took_step = self.mp_trainer.optimize(self.opt)
         if took_step:
             self._update_ema()
         self._anneal_lr()
         self.log_step()
 
-    def forward_backward(self, batch, cond):
+    def forward_backward(self, batch, cond, pretrained_batch=None): # classifier-free guidance
         self.mp_trainer.zero_grad()
+        if self.clf_guidance:
+            pretrained_batch = pretrained_batch.to('cuda')  # classifier-free guidance
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = {
@@ -220,14 +238,26 @@ class TrainLoop:
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
-
-            compute_losses = functools.partial(
+            
+            if self.clf_guidance: # classifier-free guidance
+                compute_losses = functools.partial(
                 self.diffusion.training_losses,
-                self.ddp_model,
+                self.model,
                 micro,
                 t,
+                self.pretrained_model, # classifier-free guidance  
+                pretrained_batch, # classifier-free guidance
+                self.guidance_scale[self.step + self.resume_step], # classifier-free guidance
                 model_kwargs=micro_cond,
             )
+            else:
+                compute_losses = functools.partial(
+                    self.diffusion.training_losses,
+                    self.ddp_model,
+                    micro,
+                    t,
+                    model_kwargs=micro_cond,
+                )
 
             if last_batch or not self.use_ddp:
                 losses = compute_losses()

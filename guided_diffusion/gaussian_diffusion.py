@@ -541,7 +541,7 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
-    def ddim_sample(
+    def ddim_sample( # classifier-free guidance
         self,
         model,
         x,
@@ -629,10 +629,11 @@ class GaussianDiffusion:
 
         return {"sample": mean_pred, "pred_xstart": out["pred_xstart"]}
 
-    def ddim_sample_loop(
+    def ddim_sample_loop(   # classifier-free guidance
         self,
         model,
         shape,
+        source_model=None, # classifier-free guidance
         noise=None,
         clip_denoised=True,
         denoised_fn=None,
@@ -651,6 +652,7 @@ class GaussianDiffusion:
         for sample in self.ddim_sample_loop_progressive(
             model,
             shape,
+            source_model=source_model, # classifier-free guidance
             noise=noise,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
@@ -667,6 +669,7 @@ class GaussianDiffusion:
         self,
         model,
         shape,
+        source_model=None, # classifier-free guidance
         noise=None,
         clip_denoised=True,
         denoised_fn=None,
@@ -748,10 +751,13 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses(self, model, x_start, t, source_model=None, source_x_start=None, guidance_scale=None, model_kwargs=None, noise=None):    # Classifier-free guidance 
         """
         Compute training losses for a single timestep.
 
+        :source_x_start: classifier-free guidance 
+        :source_x_start: classifier-free guidance 
+        :source_x_start: classifier-free guidance 
         :param model: the model to evaluate loss on.
         :param x_start: the [N x C x ...] tensor of inputs.
         :param t: a batch of timestep indices.
@@ -766,9 +772,12 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
+        # classifier-free guidance (Warning: Here I am using the same noise as the target sample.)
+        source_x_t = self.q_sample(source_x_start, t, noise=noise)
 
         terms = {}
 
+        # Classifier-free guidance : Ignore
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
             terms["loss"] = self._vb_terms_bpd(
                 model=model,
@@ -780,9 +789,18 @@ class GaussianDiffusion:
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
+
+
+        # Classifier-free guidance : In my experiments, LossType is RESCALED_MSE
+        # Warning: I will leave VB out of our computation and focus solely on MEAN for cf-guidance
+        # TODO: once do it with VB and see difference
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
             model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
+            source_model_output = source_model(x_t, self._scale_timesteps(t), **model_kwargs).detach() # Classifier-free guidance, need to detach frozen source model
+            # These outputs contain both Variance and Mean output values. We should split the two first.
+            
+            # Classifier-free guidance: True -> This is the case
             if self.model_var_type in [
                 ModelVarType.LEARNED,
                 ModelVarType.LEARNED_RANGE,
@@ -790,6 +808,8 @@ class GaussianDiffusion:
                 B, C = x_t.shape[:2]
                 assert model_output.shape == (B, C * 2, *x_t.shape[2:])
                 model_output, model_var_values = th.split(model_output, C, dim=1)
+                source_model_output, source_model_var_values = th.split(source_model_output, C, dim=1) # Classifier-free guidance
+
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
                 frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
@@ -813,6 +833,11 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape
+
+            # ________________________where the loss is created________________________________
+            guidance_scale = th.tensor([guidance_scale], device=x_start.device, dtype=th.float32) 
+            model_output = source_model_output + guidance_scale * (model_output - source_model_output) # Classifier-free guidance
+            #__________________________________________________________________________________
 
             # P2 weighting
             weight = _extract_into_tensor(1 / (self.p2_k + self.snr)**self.p2_gamma, t, target.shape)
